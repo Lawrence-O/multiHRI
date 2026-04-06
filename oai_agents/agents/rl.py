@@ -6,6 +6,7 @@ from oai_agents.common.tags import AgentPerformance, TeamType, TeammatesCollecti
 from oai_agents.agents.agent_utils import CustomAgent
 from oai_agents.gym_environments.base_overcooked_env import OvercookedGymEnv
 from oai_agents.common.checked_model_name_handler import CheckedModelNameHandler
+from oai_agents.common.local_logger import LocalLogger
 
 import numpy as np
 from stable_baselines3 import PPO, DQN
@@ -16,7 +17,8 @@ import wandb
 import os
 from typing import Literal
 
-VEC_ENV_CLS = DummyVecEnv #
+from oai_agents.gym_environments.batched_vec_env import BatchedTeammateVecEnv
+VEC_ENV_CLS = BatchedTeammateVecEnv
 
 class RLAgentTrainer(OAITrainer):
     ''' Train an RL agent to play with a teammates_collection of agents.'''
@@ -339,6 +341,14 @@ class RLAgentTrainer(OAITrainer):
 
         self.log_details(experiment_name, total_train_timesteps)
 
+        # Local CSV logger for metrics (works regardless of wandb mode)
+        model_path = OAITrainer.get_model_path(
+            base_dir=self.args.base_dir,
+            exp_folder=self.args.exp_dir,
+            model_name=self.name
+        )
+        self.local_logger = LocalLogger(log_dir=str(model_path), name=self.name)
+
         if self.checkpoint_rate is not None:
             if self.args.resume:
                 path = RLAgentTrainer.get_model_path(
@@ -379,12 +389,23 @@ class RLAgentTrainer(OAITrainer):
             self.learning_agent.learn(self.epoch_timesteps)
             self.steps += 1
 
+            # Log SB3 training metrics locally
+            self.local_logger.log_training(self.learning_agent)
+
             if self.should_evaluate(steps=self.steps):
                 mean_training_rew = np.mean([ep_info["r"] for ep_info in self.learning_agent.agent.ep_info_buffer])
                 if mean_training_rew >= self.best_training_rew:
                     self.best_training_rew = mean_training_rew
 
                 mean_reward, rew_per_layout, rew_per_layout_per_teamtype = self.evaluate(self.learning_agent, timestep=self.learning_agent.num_timesteps)
+
+                # Log eval metrics locally
+                self.local_logger.log_eval(
+                    timestep=self.learning_agent.num_timesteps,
+                    mean_reward=mean_reward,
+                    rew_per_layout=rew_per_layout,
+                    rew_per_layout_per_teamtype=rew_per_layout_per_teamtype,
+                )
 
                 if self.curriculum.prioritized_sampling:
                     # Use the results from the evaluation to dictate how teammates are sampled in the next round
@@ -407,6 +428,7 @@ class RLAgentTrainer(OAITrainer):
                     self.best_score = mean_reward
 
         self.save_agents(tag=KeyCheckpoints.MOST_RECENT_TRAINED_MODEL)
+        self.local_logger.close()
         self.agents, _, _ = RLAgentTrainer.load_agents(args=self.args, name=self.name, tag=tag_for_returning_agent)
         run.finish()
 

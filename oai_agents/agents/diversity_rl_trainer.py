@@ -1,7 +1,8 @@
 from oai_agents.agents.rl import RLAgentTrainer
 from stable_baselines3.common.env_util import make_vec_env
 from oai_agents.gym_environments.base_overcooked_env import OvercookedGymEnv, BonusOvercookedGymEnv
-from stable_baselines3.common.vec_env import DummyVecEnv as VEC_ENV_CLS
+from stable_baselines3.common.vec_env import DummyVecEnv
+from oai_agents.gym_environments.batched_vec_env import BatchedTeammateVecEnv as VEC_ENV_CLS
 
 class DiversityRLAgentTrainer(RLAgentTrainer):
     """

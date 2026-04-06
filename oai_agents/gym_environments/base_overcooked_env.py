@@ -96,6 +96,7 @@ class OvercookedGymEnv(Env):
         self.teammates = []
         self.joint_action = []
         self.deterministic = deterministic
+        self._precomputed_teammate_actions = None  # Used by BatchedTeammateVecEnv
         self.reset_info = {}
         if full_init:
             self.set_env_layout(**kwargs)
@@ -231,6 +232,22 @@ class OvercookedGymEnv(Env):
         id = self.t_idxes.index(idx)
         return self.teammates[id]
 
+    def get_teammate_info_for_batching(self):
+        """Return teammate observation + metadata needed for batched inference.
+        Returns list of (obs, teammate_id_obj, is_custom, info_dict) per teammate slot."""
+        result = []
+        for t_idx in self.t_idxes:
+            teammate = self.get_teammate_from_idx(t_idx)
+            is_custom = type(teammate) == CustomAgent
+            tm_obs = self.get_obs(c_idx=t_idx, enc_fn=teammate.encoding_fn)
+            info = {'layout_name': self.layout_name, 'u_env_idx': self.unique_env_idx} if is_custom else None
+            result.append((tm_obs, id(teammate), is_custom, info, teammate))
+        return result
+
+    def set_precomputed_teammate_actions(self, actions):
+        """Set pre-computed teammate actions for the next step() call."""
+        self._precomputed_teammate_actions = actions
+
     def step(self, action):
         if len(self.teammates) == 0 and self.args.num_players > 1:
             raise ValueError('set_teammates must be set called before starting game.')
@@ -238,15 +255,21 @@ class OvercookedGymEnv(Env):
         joint_action = [None for _ in range(self.mdp.num_players)]
         joint_action[self.p_idx] = action
 
-        with th.no_grad():
-            for t_idx in self.t_idxes:
-                teammate = self.get_teammate_from_idx(t_idx)
-                tm_obs = self.get_obs(c_idx=t_idx, enc_fn=teammate.encoding_fn)
-                if type(teammate) == CustomAgent:
-                    info = {'layout_name': self.layout_name, 'u_env_idx': self.unique_env_idx}
-                    joint_action[t_idx] = teammate.predict(obs=tm_obs, deterministic=self.deterministic, info=info)[0]
-                else:
-                    joint_action[t_idx] = teammate.predict(obs=tm_obs, deterministic=self.deterministic)[0]
+        if self._precomputed_teammate_actions is not None:
+            # Use batched actions from BatchedTeammateVecEnv
+            for i, t_idx in enumerate(self.t_idxes):
+                joint_action[t_idx] = self._precomputed_teammate_actions[i]
+            self._precomputed_teammate_actions = None
+        else:
+            with th.no_grad():
+                for t_idx in self.t_idxes:
+                    teammate = self.get_teammate_from_idx(t_idx)
+                    tm_obs = self.get_obs(c_idx=t_idx, enc_fn=teammate.encoding_fn)
+                    if type(teammate) == CustomAgent:
+                        info = {'layout_name': self.layout_name, 'u_env_idx': self.unique_env_idx}
+                        joint_action[t_idx] = teammate.predict(obs=tm_obs, deterministic=self.deterministic, info=info)[0]
+                    else:
+                        joint_action[t_idx] = teammate.predict(obs=tm_obs, deterministic=self.deterministic)[0]
 
         joint_action = [Action.INDEX_TO_ACTION[(a.squeeze() if type(a) != int else a)] for a in joint_action]
         self.joint_action = joint_action
