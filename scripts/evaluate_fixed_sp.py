@@ -36,14 +36,24 @@ def policy_files(path):
             for name in ("agent_file", "agent_file_sb3_agent.zip")}
 
 
-def policies(root, players, method):
-    team = resolve_agent(
+def policies(root, players, method, team_seed=None):
+    canonical = resolve_agent(
         root / "agent_models" / "HyakComplex" / str(players)
         / f"SP_s{CANONICAL[players]}_h256_tr[SP]_ran" / "best")
+    team_seed = CANONICAL[players] if team_seed is None else team_seed
+    if team_seed == CANONICAL[players]:
+        team = canonical
+    else:
+        candidates = [root / "agent_models" / family / str(players)
+                      / f"SP_s{team_seed}_h256_tr[SP]_ran" / "best"
+                      for family in ("Complex", "HyakComplex")]
+        team = next((resolve_agent(best) for best in candidates if best.is_dir()), None)
+        if team is None:
+            raise FileNotFoundError(f"missing SP teammate seed {team_seed}: {candidates}")
     result = []
     for seed in SEEDS[method]:
         if method == "sp" and seed == CANONICAL[players]:
-            path = team
+            path = canonical
         else:
             dirname = (f"FCP_s{seed}_h256_tr[AMX]_ran" if method == "fcp"
                        else f"SP_s{seed}_h256_tr[SP]_ran")
@@ -56,8 +66,8 @@ def policies(root, players, method):
                 raise FileNotFoundError(f"missing {method} seed {seed}: {candidates}")
         result.append({"ego_seed": seed, "ego_path": str(path),
                        "ego_hashes": policy_files(path), "team_path": str(team),
-                       "team_hashes": policy_files(team)})
-    return sorted(result, key=lambda p: p["ego_path"] != str(team))
+                       "team_hashes": policy_files(team), "team_seed": team_seed})
+    return sorted(result, key=lambda p: p["ego_path"] != str(canonical))
 
 
 def atomic_json(path, payload):
@@ -70,7 +80,7 @@ def atomic_json(path, payload):
 def run_episode(task):
     path = Path(task["episode_path"])
     semantic = {k: task[k] for k in (
-        "players", "layout", "method", "ego_seed", "ego_hashes", "team_hashes",
+        "players", "layout", "method", "ego_seed", "ego_hashes", "team_hashes", "team_seed",
         "episode", "seed", "max_steps", "execution_revision",
         "multihri_overcooked_src", "multihri_revision")}
     signature = hashlib.sha256(json.dumps(semantic, sort_keys=True).encode()).hexdigest()
@@ -154,7 +164,8 @@ def run_episode(task):
               "return": returns[0], "steps": steps,
               "wall_time_s": time.perf_counter() - start,
               "job_id": os.environ.get("SLURM_JOB_ID"), "completed_at": time.time()}
-    if task["method"] == "sp" and task["ego_seed"] == CANONICAL[task["players"]]:
+    if (task["method"] == "sp" and task["ego_seed"] == CANONICAL[task["players"]]
+            and task["team_seed"] == CANONICAL[task["players"]]):
         reference = json.loads(REFERENCE.read_text())
         if task["max_steps"] == reference["max_steps"] and task["seed"] == reference["seed"]:
             expected = reference["returns"][task["layout"]][task["episode"]]
@@ -181,13 +192,13 @@ def statistics_row(rows):
 
 def export(output, rows, manifest):
     rows = sorted(rows, key=lambda r: (r["ego_seed"], r["episode"]))
-    keys = ("method", "players", "layout", "ego_seed", "episode", "episode_seed",
+    keys = ("method", "players", "layout", "ego_seed", "episode", "episode_seed", "team_seed",
             "return", "wall_time_s", "job_id", "ego_path", "team_path")
     for name, fields, data in (
             ("episodes.csv", keys, [{k: r[k] for k in keys} for r in rows]),
-            ("steps.csv", (*keys[:6], "timestep", "executed_ego_action", "partner_actions",
+            ("steps.csv", (*keys[:7], "timestep", "executed_ego_action", "partner_actions",
                            "reward", "total_reward"),
-             [{**{k: r[k] for k in keys[:6]}, **s,
+             [{**{k: r[k] for k in keys[:7]}, **s,
                "partner_actions": json.dumps(s["partner_actions"])}
               for r in rows for s in r["steps"]])):
         temporary = output / f".{name}.tmp"
@@ -226,11 +237,13 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max_steps", type=int, default=400)
     parser.add_argument("--ego_seed", type=int)
+    parser.add_argument("--team_seed", type=int, choices=SEEDS["sp"],
+                        help="SP policy repeated in teammate slots; defaults to canonical team")
     parser.add_argument("--preflight", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.episodes <= 16 or args.workers < 1 or not 1 <= args.max_steps <= 400:
         parser.error("episodes must be 1..16, workers >=1, max_steps 1..400")
-    candidates = policies(args.multihri_root.resolve(), args.players, args.method)
+    candidates = policies(args.multihri_root.resolve(), args.players, args.method, args.team_seed)
     overcooked_src = args.multihri_overcooked_src or (
         args.multihri_root / "overcooked_ai" / "src")
     overcooked_src = overcooked_src.resolve()
@@ -245,6 +258,7 @@ def main():
     manifest = {"method": args.method, "players": args.players,
                 "layout": f"{args.players}_chefs_{args.layout}", "seed": args.seed,
                 "episodes_per_checkpoint": args.episodes, "max_steps": args.max_steps,
+                "team_seed": candidates[0]["team_seed"],
                 "checkpoint_policies": candidates, "revision": revision,
                 "multihri_root": str(args.multihri_root.resolve()),
                 "execution_revision": source_hash,
@@ -253,7 +267,7 @@ def main():
                     ["git", "rev-parse", "HEAD"], cwd=args.multihri_root.resolve(),
                     text=True).strip(),
                 "reward": "shared sparse return (unduplicated sparse reward sum)",
-                "protocol": "replace slot 0; fixed canonical SP teammates; native mHRI SB3 evaluation; stochastic; anti-stuck enabled",
+                "protocol": "replace slot 0; fixed selected SP teammates; native mHRI SB3 evaluation; stochastic; anti-stuck enabled",
                 "held_out_teammate_training_exposure": "not verified"}
     print(json.dumps(manifest, indent=2), flush=True)
     if args.preflight:
