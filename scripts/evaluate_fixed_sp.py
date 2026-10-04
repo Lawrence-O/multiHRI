@@ -117,7 +117,7 @@ def run_episode(task):
                  for _ in range(task['players'] - 1)]
     env = OvercookedGymEnv(args=args, layout_name=task['layout'],
                           is_eval_env=True, horizon=task['max_steps'],
-                          deterministic=True, learner_type='originaler')
+                          deterministic=False, learner_type='originaler')
     env.set_teammates(teammates)
     env.set_reset_p_idx(0)
     if env.mdp.num_players != task['players']:
@@ -135,14 +135,14 @@ def run_episode(task):
         nonlocal total
         reward = float(local['reward'])
         total += reward
-        joint = env.get_joint_action()
+        joint = env.prev_actions
         steps.append({'timestep': len(steps),
                       'executed_ego_action': int(np.asarray(local['actions']).reshape(-1)[0]),
                       'partner_actions': [Action.ACTION_TO_INDEX[a] for a in joint[1:]],
                       'reward': reward, 'total_reward': total})
     try:
         returns, lengths = evaluate_policy(ego, env, n_eval_episodes=1,
-                                          deterministic=True, warn=False,
+                                          deterministic=False, warn=False,
                                           return_episode_rewards=True,
                                           callback=record_step)
     finally:
@@ -253,7 +253,7 @@ def main():
                     ["git", "rev-parse", "HEAD"], cwd=args.multihri_root.resolve(),
                     text=True).strip(),
                 "reward": "shared sparse return (unduplicated sparse reward sum)",
-                "protocol": "replace slot 0; fixed canonical SP teammates; native mHRI SB3 evaluation; deterministic; anti-stuck enabled",
+                "protocol": "replace slot 0; fixed canonical SP teammates; native mHRI SB3 evaluation; stochastic; anti-stuck enabled",
                 "held_out_teammate_training_exposure": "not verified"}
     print(json.dumps(manifest, indent=2), flush=True)
     if args.preflight:
