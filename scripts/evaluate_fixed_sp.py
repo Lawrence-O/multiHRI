@@ -159,7 +159,7 @@ def run_episode(task):
         if task["max_steps"] == reference["max_steps"] and task["seed"] == reference["seed"]:
             expected = reference["returns"][task["layout"]][task["episode"]]
             result["reference_return"] = expected
-            result["reference_verified"] = returns[0] == expected
+            result["reference_verified"] = bool(returns[0] == expected)
             result['reference_protocol'] = 'COMBO execution; native mHRI anti-stuck behavior may differ'
     atomic_json(path, result)
     print(f"DONE ego_seed={task['ego_seed']} episode={task['episode']} "
@@ -287,4 +287,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
